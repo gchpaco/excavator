@@ -11,24 +11,21 @@ function inch()
    sleep(0.6)
 end
 
-function translateMessage(message)
-   start, stop = string.find(message, " ", 1, true)
-   if start == nil then
-      return nil
-   else
-      return string.sub(message, 1, start), string.sub(message, stop)
-   end
+function sendMessage(send, reply, tbl)
+   tbl.sender = os.getComputerID()
+   modem.transmit(send, reply, textutils.serialize(tbl))
 end
 
-local announceChannel = 1
-local statusChannel = 2
-
-local modem = peripheral.wrap("right")
+lastCensus = 0
 
 function compileCensus()
-   modem.transmit(statusChannel, statusChannel, "report")
-   lastCensus = os.clock()
+   print("Compiling census")
+   sendMessage(statusChannel, statusChannel, { type="report" })
 end
+
+announceChannel = 1
+statusChannel = 2
+modem = peripheral.wrap("left")
 
 modem.open(announceChannel)
 modem.open(statusChannel)
@@ -40,59 +37,90 @@ lastmsg = {}
 
 -- first, request that everybody report in, to get an initial census.
 compileCensus()
+timer = os.startTimer(censusThreshold)
 while true do
    local event, modemSide, senderChannel,
-   replyChannel, rawMessage, senderDistance = os.pullEvent("modem_message")
+   replyChannel, rawMessage, senderDistance = os.pullEvent()
 
-   message, sender = translateMessage(rawMessage)
+   if event == "timer" then
+      timer = os.startTimer(censusThreshold)
+   elseif event == "modem_message" and senderDistance > 0 then
+      message = textutils.unserialize(rawMessage)
 
-   if senderChannel == announceChannel then
-      if message == "hello" then
-         census[sender] = "working"
-         lastmsg[sender] = os.clock()
-         modem.transmit(replyChannel, statusChannel, "dig")
-      else
-         print("Couldn't understand message "..rawMessage.." on announce")
-      end
-   elseif senderChannel == statusChannel then
-      if rawMessage == "report" then
-         -- that's just us.
-      elseif message == "digging" then
-         census[sender] = "working"
-         lastmsg[sender] = os.clock()
-      elseif message == "backlogged" then
-         census[sender] = "backlogged"
-         lastmsg[sender] = os.clock()
-      elseif message == "ready" then
-         census[sender] = "ready"
-         lastmsg[sender] = os.clock()
-      else
-         print("Couldn't understand message "..rawMessage.." on status")
-      end
-   end
-
-   local ready = true
-   for id,status in pairs(census) do
-      if status != "ready" then
-         ready = false
-      end
-      if lastmsg[id] < lastCensus then
-         -- evict guys who haven't responded since last census
-         if os.clock() - lastmsg[id] > timeoutThreshold then
-            print("Evicting "..sender)
-            table.remove(census, sender)
-            table.remove(lastmsg, sender)
+      if senderChannel == announceChannel then
+         if message.type == "hello" then
+            print("Hello, worker "..message.sender)
+            census[message.sender] = "working"
+            lastmsg[message.sender] = os.clock()
+            sendMessage(replyChannel, statusChannel, { type="dig" })
+         else
+            print("Couldn't understand message "..rawMessage.." on announce")
+         end
+      elseif senderChannel == statusChannel then
+         if message.type == "status" then
+            if message.status == "digging" then
+               census[message.sender] = "working"
+               lastmsg[message.sender] = os.clock()
+            elseif message.status == "backlogged" then
+               census[message.sender] = "backlogged"
+               lastmsg[message.sender] = os.clock()
+            elseif message.status == "ready" then
+               census[message.sender] = "ready"
+               lastmsg[message.sender] = os.clock()
+            end
+         else
+            print("Couldn't understand message "..rawMessage.." on status")
          end
       end
    end
 
-   if ready then
-      print("all ready, advancing")
-      inch()
-      print("now digging")
-      modem.transmit(statusChannel, statusChannel, "dig")
-   elseif os.clock() - lastCensus > censusThreshold then
-      print("triggering census")
+   if os.clock() - lastCensus > censusThreshold then
       compileCensus()
+      lastCensus = os.clock()
+   elseif table.maxn(census) > 0 then
+      local ready = true
+      local readyCount = 0
+      local workingCount = 0
+      local backloggedCount = 0
+      local deadbeats = {}
+      for id, status in pairs(census) do
+         if lastmsg[id] < lastCensus then
+            -- evict guys who haven't responded since last census
+            if os.clock() - lastmsg[id] > timeoutThreshold then
+               print("Evicting "..id)
+               table.insert(deadbeats, id)
+            end
+         elseif status == "ready" then
+            readyCount = readyCount + 1
+         elseif status == "working" then
+            workingCount = workingCount + 1
+            ready = false
+         elseif status == "backlogged" then
+            backloggedCount = backloggedCount + 1
+            ready = false
+         else
+            print("Saw a status for worker "..id.." that I don't understand: "..status)
+            ready = false
+         end
+      end
+      print("Ready:      "..readyCount)
+      print("Working:    "..workingCount)
+      print("Backlogged: "..backloggedCount)
+      print("Deadbeats:  "..table.maxn(deadbeats))
+
+      for index, id in pairs(deadbeats) do
+         table.remove(census, id)
+         table.remove(lastmsg, id)
+      end
+
+      if ready and table.maxn(census) > 0 then
+         print("All ready, advancing")
+         inch()
+         print("Now dig!")
+         sendMessage(statusChannel, statusChannel, { type="dig" })
+         for id,status in pairs(census) do
+            census[id] = "working"
+         end
+      end
    end
 end

@@ -1,26 +1,33 @@
-local announceChannel = 1
-local statusChannel = nil
-local digTimeout = 5
-local modem = peripheral.wrap("right")
+announceChannel = 1
+statusChannel = nil
+digTimeout = 5
+modem = peripheral.wrap("right")
 replyChannel = math.random(2, 65536)
 modem.open(replyChannel)
 
--- announce presence to server and figure out what we should do
-modem.transmit(announceChannel, replyChannel, "hello "..os.getComputerID())
-lastHello = os.clock()
+function sendMessage(send, reply, tbl)
+   tbl.sender = os.getComputerID()
+   modem.transmit(send, reply, textutils.serialize(tbl))
+end
 
+-- announce presence to server and figure out what we should do
+sendMessage(announceChannel, replyChannel, { type="hello" })
+
+timer = os.startTimer(5)
 while true do
    local event, modemSide, senderChannel,
-   replyChannel, rawMessage, senderDistance = os.pullEvent("modem_message")
+   hisReplyChannel, rawMessage, senderDistance = os.pullEvent()
 
-   if rawMessage == "dig" then
-      statusChannel = replyChannel
-      modem.open(statusChannel)
-      break
-   elseif lastHello == nil or lastHello - os.clock() > 5 then
-      modem.transmit(announceChannel, replyChannel,
-                     "hello "..os.getComputerID())
-      lastHello = os.clock()
+   if event == "timer" then
+      timer = os.startTimer(5)
+      sendMessage(announceChannel, replyChannel, { type="hello" })
+   elseif event == "modem_message" and senderDistance > 0 then
+      message = textutils.unserialize(rawMessage)
+      if message.type == "dig" then
+         statusChannel = hisReplyChannel
+         modem.open(statusChannel)
+         break
+      end
    end
 end
 
@@ -42,6 +49,7 @@ function clearInventory()
          end
       end
    end
+   turtle.select(1)
    return status
 end
 
@@ -51,37 +59,44 @@ function startDigging()
 end
 
 startDigging()
-local status = "digging"
+status = "digging"
 
 while true do
-   timeout = os.startTimer(5)
-   local event, param1, param2, param3, param4, param5 = os.pullEvent()
-   if event == "timer" and param1 == timeout then
-      -- happens for many reasons.  First, is the inventory clear?
-      if status != "ready" and inventorySize() == 0 then
-         turtle.dig()
-         status = "ready"
-      else
-         -- okay, clear the inventory
-         if clearInventory() then
-            status = "digging"
+   print("Current status: "..status)
+   local event, modemSide, senderChannel,
+   replyChannel, rawMessage, senderDistance = os.pullEvent()
+   if event == "timer" then
+      timer = os.startTimer(5)
+      if status ~= "ready" then
+         print("Cleaning inventory")
+         -- happens for many reasons.  First, is the inventory clear?
+         if inventorySize() == 0 then
+            turtle.dig()
+            status = "ready"
          else
-            status = "backlogged"
+            -- okay, clear the inventory
+            if clearInventory() then
+               status = "digging"
+            else
+               status = "backlogged"
+            end
          end
       end
-   elseif event == "timer" and param1 ~= timeout then
-      -- probably a stale timer.  Ignore it.
    elseif event == "modem_message" then
-      message = param4
-      if message == "dig" and status == "ready" then
-         startDigging()
-         status = "digging"
-      elseif message == "report" then
-         replyChannel = param3
-         modem.transmit(replyChannel, statusChannel,
-                        status.." "..os.getComputerID())
+      if senderDistance > 0 then
+         print("got message "..rawMessage)
+         message = textutils.unserialize(rawMessage)
+         if message.type == "dig" and status == "ready" then
+            startDigging()
+            status = "digging"
+         elseif message.type == "report" then
+            sendMessage(replyChannel, statusChannel,
+               { type="status", status=status })
+         else
+            print("Got a message I couldn't understand: "..param4)
+         end
       else
-         print("Got a message I couldn't understand: "..message)
+         -- that's just us
       end
    else
       print("Got an event I couldn't understand: "..event)
