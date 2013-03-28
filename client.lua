@@ -37,7 +37,7 @@ function clearInventory()
    for i = 1,16 do
       if turtle.getItemCount(i) > 0 then
          turtle.select(i)
-         if not turtle.drop() then
+         if not turtle.dropDown() then
             status = false
          end
       end
@@ -48,8 +48,6 @@ end
 function startDigging()
    turtle.select(1)
    turtle.place()
-   turtle.turnLeft()
-   turtle.turnLeft()
 end
 
 startDigging()
@@ -61,8 +59,6 @@ while true do
    if event == "timer" and param1 == timeout then
       -- happens for many reasons.  First, is the inventory clear?
       if status != "ready" and inventorySize() == 0 then
-         turtle.turnLeft()
-         turtle.turnLeft()
          turtle.dig()
          status = "ready"
       else
